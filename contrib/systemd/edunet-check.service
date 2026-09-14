@@ -1,0 +1,12 @@
+[Unit]
+Description=Check campus portal and Internet connectivity
+Documentation=man:systemd.service(5)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/edunet --no-color --timeout 8 status --portal
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-%h/.config/edunet/check.env
+TimeoutStartSec=30
+StandardOutput=journal
+StandardError=journal

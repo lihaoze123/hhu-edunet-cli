@@ -1,0 +1,12 @@
+[Unit]
+Description=Check campus connectivity every two minutes
+
+[Timer]
+OnStartupSec=30s
+OnUnitActiveSec=2min
+RandomizedDelaySec=10s
+AccuracySec=1s
+Unit=edunet-check.service
+
+[Install]
+WantedBy=timers.target
