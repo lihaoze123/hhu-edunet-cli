@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- systemd 定时任务改为外网探测失败且门户可达时自动登录，每轮最多提交一次。
+- 添加 `login --require-portal`、必需凭据配置与安装说明。
+
 ## 0.1.0
 
 - 将单文件脚本整理为可安装的 uv 项目，命令名为 `edunet`。

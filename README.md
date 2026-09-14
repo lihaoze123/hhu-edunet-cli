@@ -122,23 +122,41 @@ uv run edunet --json status
 
 可使用 `uv run edunet --show-completion` 查看 shell 补全脚本，或 `--install-completion` 安装补全。若希望长期使用补全，先用 `uv tool install .` 安装命令。
 
-## systemd 定时检测（Linux）
+## systemd 定时检测与自动登录（Linux）
 
-附带用户级 [service](contrib/systemd/edunet-check.service) 和 [timer](contrib/systemd/edunet-check.timer)。默认每两分钟执行一次 `status --portal`，附加最多 10 秒随机延迟，结果写入 journal；不登录、不登出，也不需要密码。门户可达性通过配置服务器的 HTTP 2xx/3xx 响应判断，不能证明认证状态或物理上处于校园内。
+附带用户级 [service](contrib/systemd/edunet-check.service) 和 [timer](contrib/systemd/edunet-check.timer)。默认每两分钟运行一次 `login --no-input --require-portal`，附加最多 10 秒随机延迟：
 
-在项目目录执行：
+1. 外网探测通过：直接结束，不提交登录。
+2. 外网探测失败、校园网门户不可达：跳过登录，记录失败。
+3. 外网探测失败、门户可达：读取配置凭据，获取当前参数，提交一次登录。
+4. 门户确认成功后最多做三次外网探测；结果写入 journal。
+
+每轮只提交一次登录，失败后等待下一次 timer，不在进程内重试密码。若密码错误，后续轮次仍会尝试，请及时停用 timer 并修正凭据。外网探测站点自身故障也可能触发登录，可按实际网络更换探测地址。
+
+### 安装与配置
+
+在项目目录执行（已有安装先运行 `uv tool install --force .`）：
 
 ```sh
 uv tool install .
-mkdir -p ~/.config/systemd/user
+mkdir -p ~/.config/edunet ~/.config/systemd/user
+(umask 077; cp -i contrib/systemd/check.env.example ~/.config/edunet/check.env)
+chmod 600 ~/.config/edunet/check.env
+```
+
+编辑 `~/.config/edunet/check.env`，填写 `EDUNET_USERNAME` 和 `EDUNET_PASSWORD`，保留实际门户与探测地址。该文件使用 systemd `EnvironmentFile` 语法，不写 `export`；含空格的值需要引号。文件包含明文凭据，请勿提交到仓库或公开分享。
+
+然后安装并启动：
+
+```sh
 cp contrib/systemd/edunet-check.service contrib/systemd/edunet-check.timer ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now edunet-check.timer
 ```
 
-service 默认执行 `~/.local/bin/edunet`。如使用自定义 uv 工具安装目录，先用 `uv tool dir --bin` 检查路径，再修改 service 的 `ExecStart` 为实际绝对路径。定时任务运行时不调用 uv，不会临时下载依赖。
+配置文件缺失时 service 不启动；凭据为空时，离线状态下 CLI 返回 `2`，不进入交互。service 默认执行 `~/.local/bin/edunet`。如使用自定义 uv 安装目录，用 `uv tool dir --bin` 检查路径并修改 `ExecStart`。任务运行时不调用 uv，也不下载依赖。
 
-查看和手动检测：
+### 查看状态与日志
 
 ```sh
 systemctl --user list-timers edunet-check.timer
@@ -146,24 +164,13 @@ systemctl --user start edunet-check.service
 journalctl --user -u edunet-check.service -n 30 --no-pager
 ```
 
-成功检测后 oneshot service 显示 `inactive (dead)` 是正常的；应查看 timer 是否为 `active (waiting)`。门户或外网任一检查失败时返回 `1`，service 会显示失败，但 timer 会继续安排下一次检查。日志不会主动发送桌面或邮件通知。
+成功结束后 oneshot service 显示 `inactive (dead)` 正常；timer 应为 `active (waiting)`。失败后 timer 继续安排下一轮。退出码 `3` 表示门户已确认成功但外网探测未通过，日志会明确区分。日志不含密码或会话值，也不会主动发送邮件通知。
 
-可选配置探测地址（不填写账号密码）：
+每次 HTTP 请求超时为 8 秒，整轮 service 最长 4 分钟，用于容纳多次参数发现请求与探测。上一轮仍在运行时 systemd 不会并发启动同一个 service。用户手动执行的其他 CLI 进程不受此限制。
 
-```sh
-mkdir -p ~/.config/edunet
-cp contrib/systemd/check.env.example ~/.config/edunet/check.env
-```
+### 调整与停用
 
-编辑 `check.env` 中的 `EDUNET_SERVER` / `EDUNET_PROBE_URL` 即可，下次执行生效。超时由 service 的 `--timeout 8` 指定；若调大超时，请同时增大 `TimeoutStartSec`。
-
-修改频率：
-
-```sh
-systemctl --user edit edunet-check.timer
-```
-
-填写：
+修改 `check.env` 后下次执行生效。要改为每五分钟执行，运行 `systemctl --user edit edunet-check.timer`，填写：
 
 ```ini
 [Timer]
@@ -171,16 +178,16 @@ OnUnitActiveSec=
 OnUnitActiveSec=5min
 ```
 
-然后运行 `systemctl --user daemon-reload` 和 `systemctl --user restart edunet-check.timer`。启动检查以用户 systemd 管理器启动时间为基准；安装时若已经超过 30 秒，可立即运行一次。默认随用户会话运行；若希望退出登录后仍运行，可由你决定执行 `loginctl enable-linger "$USER"`，系统可能要求管理员权限。定时语义见 [systemd.timer 官方文档](https://www.freedesktop.org/software/systemd/man/latest/systemd.timer.html)。
+然后运行 `systemctl --user daemon-reload` 和 `systemctl --user restart edunet-check.timer`。启动检查以用户 systemd 管理器启动时间为基准，若已超过 30 秒，启用时可立即执行。默认随用户会话运行；若需要退出用户会话后继续运行，可自行执行 `loginctl enable-linger "$USER"`，系统可能要求管理员权限。定时语义见 [systemd.timer 官方文档](https://www.freedesktop.org/software/systemd/man/latest/systemd.timer.html)。
 
-停用：
+停止自动登录：
 
 ```sh
 systemctl --user disable --now edunet-check.timer
 systemctl --user stop edunet-check.service
 ```
 
-仓库只附带配置，不会在安装 Python 包时自动启用系统服务。
+**手动登出前请先停用 timer，否则下一轮可能自动重新登录。** 仓库只附带配置，安装 Python 包不会自动启用服务。
 
 ## 协议与兼容范围
 
@@ -191,7 +198,7 @@ systemctl --user stop edunet-check.service
 5. 仅将 `result=success` 视为门户确认成功；随后最多做三次外网探测。
 6. 登出使用 `InterFace.do?method=logout` 和当前成功页的 `userIndex`。
 
-页面配置曾返回 `passwordEncrypt=false`，但实际成功请求为 `true`；此客户端固定采用已观察到的加密方式。服务字段默认为空。已观察到的保活间隔为 `0`，当前不提供定时保活、断线守护或开机任务安装。
+页面配置曾返回 `passwordEncrypt=false`，但实际成功请求为 `true`；此客户端固定采用已观察到的加密方式。服务字段默认为空。已观察到的保活间隔为 `0`，当前不发送协议保活请求；可选 systemd timer 提供周期性检查与离线登录，不自动安装或启用任务。
 
 目前仅支持 ASCII 密码（英文、数字、半角符号）；用户名可包含中文。验证码、短信认证、运营商独立密码、CAS/统一认证和其他 RSA 变体尚不支持。检测到验证码要求时会停止；门户变化可能需要重新适配。
 

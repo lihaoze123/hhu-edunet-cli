@@ -138,3 +138,51 @@ def test_status_portal(monkeypatch, make_client, portal_status, probe_status, co
     data = json.loads(result.stdout)
     assert data["portal_reachable"] is (portal_status == 200)
     assert data["online"] is (probe_status == 204)
+
+
+@pytest.mark.parametrize(
+    "online,reachable,expected_posts,exit_code",
+    [(True, True, 0, 0), (False, False, 0, 1), (False, True, 1, 0)],
+)
+def test_scheduled_login(monkeypatch, make_client, online, reachable, expected_posts, exit_code):
+    posts = []
+
+    def handler(request):
+        if request.method == "GET":
+            if request.url.host != "10.100.200.3":
+                return httpx.Response(204 if online or posts else 200)
+            return httpx.Response(200 if reachable else 503)
+        if request.url.params["method"] == "pageInfo":
+            return httpx.Response(200, json=PAGE_INFO)
+        posts.append(request)
+        return httpx.Response(200, json={"result": "success"})
+
+    bind(monkeypatch, make_client, handler)
+    result = runner.invoke(
+        cli.app,
+        ["--json", "login", "--no-input", "--require-portal", "--portal-url", LOGIN_URL],
+        env={"EDUNET_USERNAME": "test", "EDUNET_PASSWORD": "test"},
+    )
+    assert result.exit_code == exit_code, result.output
+    assert len(posts) == expected_posts
+
+
+def test_scheduled_auth_failure_submits_once(monkeypatch, make_client):
+    posts = []
+
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200)
+        if request.url.params["method"] == "pageInfo":
+            return httpx.Response(200, json=PAGE_INFO)
+        posts.append(request)
+        return httpx.Response(200, json={"result": "fail"})
+
+    bind(monkeypatch, make_client, handler)
+    result = runner.invoke(
+        cli.app,
+        ["--json", "login", "--no-input", "--require-portal", "--portal-url", LOGIN_URL],
+        env={"EDUNET_USERNAME": "test", "EDUNET_PASSWORD": "test"},
+    )
+    assert result.exit_code == 1
+    assert len(posts) == 1

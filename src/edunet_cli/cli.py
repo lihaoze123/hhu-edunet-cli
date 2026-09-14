@@ -160,6 +160,9 @@ def login(
     ] = False,
     no_input: Annotated[bool, typer.Option(help="禁止交互，缺少凭据直接退出。")] = False,
     force: Annotated[bool, typer.Option(help="外网已通时仍提交一次登录。")] = False,
+    require_portal: Annotated[
+        bool, typer.Option(help="登录前确认门户可达，适用于定时重连。")
+    ] = False,
 ) -> None:
     """登录校园网；密码隐藏输入，也可设置 EDUNET_PASSWORD。"""
     rt: Runtime = ctx.obj
@@ -168,6 +171,8 @@ def login(
         if not force and client.online():
             rt.emit(True, "already_online", "外网探测通过，无需登录。", online=True)
             return
+        if require_portal and not client.portal_reachable():
+            raise PortalError("校园网门户不可达，跳过本次登录；请检查校园网连接。")
         name = username
         secret = os.getenv("EDUNET_PASSWORD")
         interactive = not (rt.as_json or no_input) and sys.stdin.isatty()

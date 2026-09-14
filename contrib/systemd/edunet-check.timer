@@ -1,5 +1,5 @@
 [Unit]
-Description=Check campus connectivity every two minutes
+Description=Check campus connectivity and reconnect every two minutes
 
 [Timer]
 OnStartupSec=30s
