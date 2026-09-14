@@ -4,46 +4,166 @@
 
 **测试环境：黄淮学院校园网**，默认门户为 `http://10.100.200.3`。项目基于该校园网的登录抓包、成功认证响应和门户网页算法实现，**不是所有锐捷部署的通用客户端**。目前已完成离线协议测试，尚未使用真实账号完成新 CLI 的端到端验证。
 
-## 快速开始
+## 安装
 
-需要 Python 3.11+ 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。在克隆或下载后的项目目录运行：
+仓库：[lihaoze123/hhu-edunet-cli](https://github.com/lihaoze123/hhu-edunet-cli)。安装后统一使用 `edunet` 命令，无需进入源码目录。
+
+### Nix
+
+启用 Nix 的 `nix-command` 和 `flakes` 功能后，可直接运行远程仓库中的 CLI：
 
 ```sh
-uv sync --locked
-uv run edunet --help
-uv run edunet login
+nix run github:lihaoze123/hhu-edunet-cli -- --help
+nix run github:lihaoze123/hhu-edunet-cli -- login
+```
+
+需要安装 CLI 并启用定时重连时，使用下文的 **NixOS / Home Manager 声明式服务模块**。升级时更新配置 flake 的 `edunet` 输入，再重新 switch。
+
+### uv（Linux / macOS / Windows）
+
+需要 [uv](https://docs.astral.sh/uv/getting-started/installation/)、Git 和 Python 3.11+：
+
+```sh
+uv tool install git+https://github.com/lihaoze123/hhu-edunet-cli.git
+edunet --help
+edunet login
+```
+
+如果找不到 `edunet`，运行 `uv tool update-shell` 后重新打开终端。
+
+升级：
+
+```sh
+uv tool upgrade edunet-cli
 ```
 
 连接校园网后，`login` 会提示输入账号与密码，密码隐藏输入。外网探测通过时直接退出，不重复提交认证。
 
-也可以将当前项目安装为独立命令：
+## Nix flake
+
+远程构建和检查：
 
 ```sh
-uv tool install .
-edunet --version
-edunet login
+nix build github:lihaoze123/hhu-edunet-cli
+./result/bin/edunet --version
+nix flake check github:lihaoze123/hhu-edunet-cli
 ```
 
-更新本地安装：`uv tool install --force .`。本项目尚未发布到 PyPI，上面的安装命令使用当前目录。
+提供 `packages.default` / `packages.edunet`、`apps.default` / `apps.edunet`、`devShells.default`、`checks` 和 `formatter`。声明的平台为 Linux / macOS 的 x86_64 与 aarch64；systemd 集成仅适用于 Linux。
+
+Python 应用依赖由 [uv2nix](https://pyproject-nix.github.io/uv2nix/) 从 `uv.lock` 读取，Nix 输入由 `flake.lock` 固定。使用 Python 3.13，不另行维护一套 nixpkgs Python 应用依赖。首次运行需下载 Nix 输入与依赖。
+
+`nix flake check` 在当前系统运行离线测试、格式检查、类型检查和 CLI 入口检查，不请求校园网。安装包不会自动启用后台服务；定时重连见下文。
+
+## NixOS / Home Manager 声明式服务
+
+flake 导出 `nixosModules.default`（别名 `nixosModules.edunet`）和 `homeManagerModules.default`（别名 `homeManagerModules.edunet`）。启用模块后自动安装 CLI 并配置 timer，服务路径随 Nix 配置更新。
+
+在你的配置 flake 中添加输入：
+
+```nix
+inputs.edunet.url = "github:lihaoze123/hhu-edunet-cli";
+```
+
+### Home Manager：用户级服务
+
+将以下内容加入现有 `home-manager.lib.homeManagerConfiguration` 的 `modules` 列表，保留原有的 home 配置：
+
+```nix
+modules = [
+  inputs.edunet.homeManagerModules.default
+  {
+    services.edunet = {
+      enable = true;
+      environmentFile = "%h/.config/edunet/check.env";
+      interval = "2min";
+    };
+  }
+];
+```
+
+如果通过 NixOS 集成 Home Manager，把同一个模块加入对应 `home-manager.users.<用户名>.imports`，并在该用户配置下设置 `services.edunet`。
+
+先按下文创建权限为 `600` 的凭据文件，再执行通常的 `home-manager switch --flake <你的配置路径>`（NixOS 集成方式则执行 `nixos-rebuild switch`）。Home Manager 默认会启动新增 timer；如果你显式设置了 `systemd.user.startServices = false`，需手动执行 `systemctl --user start edunet-check.timer`。
+
+查看日志：
+
+```sh
+journalctl --user -u edunet-check.service -n 30 --no-pager
+```
+
+### NixOS：系统级服务
+
+将以下内容加入现有 `nixpkgs.lib.nixosSystem` 的 `modules` 列表，保留原有系统配置：
+
+```nix
+modules = [
+  inputs.edunet.nixosModules.default
+  {
+    services.edunet = {
+      enable = true;
+      environmentFile = "/var/lib/edunet/check.env";
+      interval = "2min";
+    };
+  }
+];
+```
+
+在激活配置前创建凭据文件：
+
+```sh
+sudo install -d -m 700 /var/lib/edunet
+sudo touch /var/lib/edunet/check.env
+sudo chmod 600 /var/lib/edunet/check.env
+sudoedit /var/lib/edunet/check.env
+```
+
+按下文格式填入账号密码，然后执行通常的 `sudo nixos-rebuild switch --flake <你的配置路径>`。timer 随系统启动，不依赖桌面登录；CLI 通过 `DynamicUser` 以动态非特权用户运行，凭据文件由系统服务管理器读取。
+
+查看日志时不加 `--user`：
+
+```sh
+sudo systemctl status edunet-check.timer
+sudo journalctl -u edunet-check.service -n 30 --no-pager
+```
+
+### 模块选项
+
+| `services.edunet` 选项 | 默认值 | 用途 |
+| --- | --- | --- |
+| `enable` | `false` | 启用 CLI 安装及定时重连 |
+| `package` | 本 flake 的 CLI 包 | 覆盖运行的包 |
+| `environmentFile` | HM：`%h/.config/edunet/check.env`；NixOS：`/var/lib/edunet/check.env` | 外部凭据文件 |
+| `interval` | `"2min"` | 每轮触发间隔 |
+| `startupDelay` | `"30s"` | 服务管理器启动后的首次检查延迟 |
+| `randomizedDelay` | `"10s"` | 随机延迟上限 |
+| `timeout` | `8` | 单次 HTTP 超时秒数，范围 1–120 |
+| `serviceTimeout` | `"4min"` | 整轮服务超时；增大 HTTP 超时时相应调整 |
+
+门户地址、探测地址和账号密码统一从 `environmentFile` 读取。**文件路径必须写成带引号的字符串**，不要使用 Nix 路径字面量、`builtins.readFile` 或 `home.file.*.text` 保存密码，以免进入 Nix store。模块不创建凭据文件，文件缺失时服务失败并记录日志。
+
+同一台机器只启用一种重连方式。若之前安装过手动用户 timer，迁移前先停止它，并移走 `~/.config/systemd/user/edunet-check.service` 和 `.timer`，避免遮蔽 Home Manager 生成的配置。升级后按通常方式更新配置 flake 的 `edunet` 输入并 switch，service 路径随配置更新。
+
+暂时停止自动登录时，Home Manager 使用 `systemctl --user stop edunet-check.timer edunet-check.service`，NixOS 使用 `sudo systemctl stop edunet-check.timer edunet-check.service`。要永久关闭，将 `services.edunet.enable = false` 后重新 switch。
 
 ## 常用命令
 
 | 命令 | 用途 |
 | --- | --- |
-| `uv run edunet login` | 登录；缺少凭据时交互输入 |
-| `uv run edunet logout` | 登出当前会话，无需重新输入密码 |
-| `uv run edunet status` | 检测是否能访问返回空 204 的探测地址 |
-| `uv run edunet status --portal` | 同时检查校园网门户是否可达 |
-| `uv run edunet doctor` | 获取当前登录参数并检查 RSA 公钥，不提交凭据 |
-| `uv run edunet --version` | 显示版本 |
-| `uv run edunet login --help` | 查看子命令选项 |
+| `edunet login` | 登录；缺少凭据时交互输入 |
+| `edunet logout` | 登出当前会话，无需重新输入密码 |
+| `edunet status` | 检测是否能访问返回空 204 的探测地址 |
+| `edunet status --portal` | 同时检查校园网门户是否可达 |
+| `edunet doctor` | 获取当前登录参数并检查 RSA 公钥，不提交凭据 |
+| `edunet --version` | 显示版本 |
+| `edunet login --help` | 查看子命令选项 |
 
 ### 登录地址无法自动发现
 
 打开浏览器的校园网登录页，复制地址栏**包含问号后参数的完整地址**：
 
 ```sh
-uv run edunet login --portal-url "http://10.100.200.3/eportal/index.jsp?填写当前完整参数"
+edunet login --portal-url "http://10.100.200.3/eportal/index.jsp?填写当前完整参数"
 ```
 
 相同选项也适用于 `doctor`。示例是占位说明，不能直接执行。脚本不会复用旧抓包的 IP、MAC 或会话值。
@@ -53,7 +173,7 @@ uv run edunet login --portal-url "http://10.100.200.3/eportal/index.jsp?填写�
 打开校园网当前登录成功页，复制其完整地址：
 
 ```sh
-uv run edunet logout --success-url "http://10.100.200.3/eportal/success.jsp?userIndex=填写当前会话值"
+edunet logout --success-url "http://10.100.200.3/eportal/success.jsp?userIndex=填写当前会话值"
 ```
 
 自动发现会话不依赖本地缓存；本工具不将 `userIndex` 写入磁盘。如果门户无法自动找回会话，需使用该选项。成功页地址包含会话凭据，不要在 issue、截图或公开日志中贴出真实值。
@@ -75,7 +195,7 @@ uv run edunet logout --success-url "http://10.100.200.3/eportal/success.jsp?user
 由任务运行环境或秘密管理器提供账号、密码后：
 
 ```sh
-uv run edunet --json login --no-input
+edunet --json login --no-input
 ```
 
 也可让秘密管理器通过管道提供一行密码，运行 `edunet login -u YOUR_USERNAME --password-stdin`。标准输入密码优先于 `EDUNET_PASSWORD`。避免把真实密码作为命令参数或写入 shell 历史。
@@ -87,9 +207,9 @@ uv run edunet --json login --no-input
 全局选项必须放在子命令**前面**：
 
 ```sh
-uv run edunet --server http://10.100.200.3 --timeout 5 status
-uv run edunet --probe-url http://conn1.oppomobile.com/generate_204 status
-uv run edunet --no-color doctor
+edunet --server http://10.100.200.3 --timeout 5 status
+edunet --probe-url http://conn1.oppomobile.com/generate_204 status
+edunet --no-color doctor
 ```
 
 探测 URL 必须是 HTTP(S) 地址，预期响应为 `204` 且内容为空。可按所在网络调整，但探测失败不能单独证明未登录。重定向不视为探测成功。修改 `--server` 只是修改目标，不保证兼容其他门户。
@@ -99,7 +219,7 @@ uv run edunet --no-color doctor
 ### JSON 输出和退出码
 
 ```sh
-uv run edunet --json status
+edunet --json status
 ```
 
 示例：
@@ -120,7 +240,7 @@ uv run edunet --json status
 
 参数解析错误（例如未知选项）由 Typer 输出到 stderr，仍可能是文本；`--help` 和 `--version` 也是文本。JSON 模式只约定有效命令的操作结果。
 
-可使用 `uv run edunet --show-completion` 查看 shell 补全脚本，或 `--install-completion` 安装补全。若希望长期使用补全，先用 `uv tool install .` 安装命令。
+可使用 `edunet --show-completion` 查看 shell 补全脚本，或 `--install-completion` 安装补全。补全针对上述安装后的 `edunet` 命令。
 
 ## systemd 定时检测与自动登录（Linux）
 
@@ -133,28 +253,44 @@ uv run edunet --json status
 
 每轮只提交一次登录，失败后等待下一次 timer，不在进程内重试密码。若密码错误，后续轮次仍会尝试，请及时停用 timer 并修正凭据。外网探测站点自身故障也可能触发登录，可按实际网络更换探测地址。
 
-### 安装与配置
+### 配置用户级服务凭据
 
-在项目目录执行（已有安装先运行 `uv tool install --force .`）：
+Home Manager 和 uv 用户级服务使用以下凭据文件；NixOS 系统级服务的文件路径与创建步骤见上文。创建用户级配置文件：
 
 ```sh
-uv tool install .
 mkdir -p ~/.config/edunet ~/.config/systemd/user
-(umask 077; cp -i contrib/systemd/check.env.example ~/.config/edunet/check.env)
+touch ~/.config/edunet/check.env
 chmod 600 ~/.config/edunet/check.env
+nano ~/.config/edunet/check.env
 ```
 
-编辑 `~/.config/edunet/check.env`，填写 `EDUNET_USERNAME` 和 `EDUNET_PASSWORD`，保留实际门户与探测地址。该文件使用 systemd `EnvironmentFile` 语法，不写 `export`；含空格的值需要引号。文件包含明文凭据，请勿提交到仓库或公开分享。
+填入以下内容，将账号和密码替换为真实值：
 
-然后安装并启动：
+```ini
+EDUNET_SERVER=http://10.100.200.3
+EDUNET_PROBE_URL=http://connectivitycheck.gstatic.com/generate_204
+EDUNET_USERNAME=你的账号
+EDUNET_PASSWORD=你的密码
+EDUNET_SERVICE=
+```
+
+该文件使用 systemd `EnvironmentFile` 语法，不写 `export`；含空格的值需要引号。文件包含明文凭据，请勿提交到仓库或公开分享。配置文件缺失时 service 不启动；凭据为空时，离线状态下 CLI 返回 `2`，不进入交互。
+
+### uv 安装后启用 systemd
+
+从远程仓库下载 service 和 timer：
 
 ```sh
-cp contrib/systemd/edunet-check.service contrib/systemd/edunet-check.timer ~/.config/systemd/user/
+curl -fSL https://raw.githubusercontent.com/lihaoze123/hhu-edunet-cli/main/contrib/systemd/edunet-check.service \
+  -o ~/.config/systemd/user/edunet-check.service
+curl -fSL https://raw.githubusercontent.com/lihaoze123/hhu-edunet-cli/main/contrib/systemd/edunet-check.timer \
+  -o ~/.config/systemd/user/edunet-check.timer
+
 systemctl --user daemon-reload
 systemctl --user enable --now edunet-check.timer
 ```
 
-配置文件缺失时 service 不启动；凭据为空时，离线状态下 CLI 返回 `2`，不进入交互。service 默认执行 `~/.local/bin/edunet`。如使用自定义 uv 安装目录，用 `uv tool dir --bin` 检查路径并修改 `ExecStart`。任务运行时不调用 uv，也不下载依赖。
+此模板默认执行 `~/.local/bin/edunet`。如使用自定义 uv 安装目录，用 `uv tool dir --bin` 检查路径并修改 `ExecStart`。定时任务运行时不调用 uv，也不下载依赖。仓库更新 unit 配置后，可重复下载并运行 `daemon-reload`。
 
 ### 查看状态与日志
 
@@ -206,7 +342,11 @@ systemctl --user stop edunet-check.service
 
 ## 开发与检查
 
+仅修改源码时需要克隆仓库：
+
 ```sh
+git clone https://github.com/lihaoze123/hhu-edunet-cli.git
+cd hhu-edunet-cli
 uv sync --locked
 uv run ruff check .
 uv run ruff format --check .
@@ -214,6 +354,18 @@ uv run mypy
 uv run pytest --cov=edunet_cli --cov-report=term-missing
 uv build
 ```
+
+也可以在克隆后的仓库根目录使用 Nix 开发环境：
+
+```sh
+nix develop
+edunet --help
+pytest -q
+ruff check .
+mypy
+```
+
+开发环境采用 editable 安装，源码修改即时生效。依赖由 Nix 提供，无需 `uv sync`；`uv` 仍可用于更新锁文件。修改依赖后退出并重新进入环境。在仓库根目录运行 `nix fmt` 格式化 flake，运行 `nix flake check` 检查当前源码。
 
 测试使用 HTTPX `MockTransport`，禁止实际网络请求。RSA 固定测试向量由门户 JavaScript 对**合成模数和测试字符串**生成；仓库不包含门户 JS、原始抓包或真实凭据。
 

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- 提供 NixOS / Home Manager 模块，声明式安装 CLI、启用定时重连并引用外部凭据文件。
+
+- 添加 uv2nix flake，提供 CLI 包、运行入口、开发环境和离线检查，Nix 包附带使用 store 路径的 systemd 模板。
+
 - systemd 定时任务改为外网探测失败且门户可达时自动登录，每轮最多提交一次。
 - 添加 `login --require-portal`、必需凭据配置与安装说明。
 

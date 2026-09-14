@@ -50,4 +50,4 @@ source = ["edunet_cli"]
 omit = ["*/__main__.py"]
 
 [tool.hatch.build.targets.sdist]
-include = ["/src", "/tests", "/README.md", "/LICENSE", "/CHANGELOG.md", "/CONTRIBUTING.md", "/pyproject.toml", "/uv.lock", "/contrib"]
+include = ["/src", "/tests", "/README.md", "/LICENSE", "/CHANGELOG.md", "/CONTRIBUTING.md", "/pyproject.toml", "/uv.lock", "/contrib", "/flake.nix", "/flake.lock", "/nix"]
